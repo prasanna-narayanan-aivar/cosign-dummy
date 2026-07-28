@@ -1,0 +1,85 @@
+name: Cosign Keyless Signing Demo
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch: {}   # lets you trigger it manually from the Actions tab
+
+permissions:
+  contents: read
+  packages: write     # needed to push to GHCR
+  id-token: write     # needed for cosign keyless (GitHub OIDC -> Fulcio)
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/cosign-demo   # e.g. ghcr.io/aivar-tech/repo/cosign-demo
+
+jobs:
+  build-sign-verify:
+    name: Build, Push, Sign, Verify
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set Commit ID
+        id: commit
+        run: |
+          COMMIT_ID=$(git rev-parse HEAD)
+          SHORT_COMMIT_ID=$(git rev-parse --short HEAD)
+          echo "commit_id=$COMMIT_ID" >> "$GITHUB_OUTPUT"
+          echo "short_commit_id=$SHORT_COMMIT_ID" >> "$GITHUB_OUTPUT"
+          echo "Commit ID: $COMMIT_ID"
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}   # built-in, no extra secret needed
+
+      - name: Build Docker Image
+        run: |
+          docker build \
+            -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.commit.outputs.commit_id }} \
+            .
+
+      - name: Push Docker Image to GHCR
+        id: push
+        run: |
+          docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.commit.outputs.commit_id }}
+
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.commit.outputs.commit_id }} \
+            | cut -d'@' -f2)
+
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "Pushed image digest: $DIGEST"
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign Image with Cosign (Keyless)
+        run: |
+          cosign sign --yes \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.push.outputs.digest }}
+
+      - name: Verify Signature (fail-fast check, right here in CI)
+        run: |
+          cosign verify \
+            --certificate-identity-regexp "^https://github.com/${{ github.repository }}/.*" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.push.outputs.digest }}
+
+      - name: Summary
+        run: |
+          echo "## Cosign Signing Demo" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "✅ **Image:** \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.commit.outputs.commit_id }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "✅ **Digest:** \`${{ steps.push.outputs.digest }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "✅ **Signed & Verified:** yes (cosign keyless)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Search Rekor for this digest at:" >> "$GITHUB_STEP_SUMMARY"
+          echo "https://search.sigstore.dev/?hash=${{ steps.push.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
