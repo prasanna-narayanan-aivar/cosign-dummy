@@ -1,0 +1,36 @@
+name: Attack Simulation - Tamper Image
+
+on:
+  workflow_dispatch: {}
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/cosign-demo
+  ORIGINAL_TAG: 192099d9f1c66b1e4e62316b78c15ab3395cfafc   # the tag your real pipeline used
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  tamper:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build a "malicious" image
+        run: |
+          mkdir evil && cd evil
+          echo 'FROM alpine:3.20
+          RUN echo "TAMPERED - not from CI" > /message.txt
+          CMD ["cat", "/message.txt"]' > Dockerfile
+          docker build -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.ORIGINAL_TAG }} .
+
+      - name: Push, overwriting the original tag
+        run: |
+          docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.ORIGINAL_TAG }}
